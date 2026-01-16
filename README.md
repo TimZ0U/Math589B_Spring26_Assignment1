@@ -41,7 +41,7 @@ python scripts/run_opt.py --N 120 --steps 200
 
 ## What you need to implement
 - `src/elastic_rod/bfgs.py`: BFGS update + line search (Wolfe or backtracking).
-- `csrc/rod_energy.cpp: The code described in the TODO: comment.
+- `csrc/rod_energy.cpp`: The code described in the TODO: comment.
 - (Optional) better initialization and plotting in `scripts/run_opt.py`.
 
 ## Repo layout
