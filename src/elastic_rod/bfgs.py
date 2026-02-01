@@ -18,7 +18,7 @@ class BFGSResult:
     history: Dict[str, Any]
 
 
-def backtracking_line_search(
+def strong_wolfe_line_search(
     f_and_g: ValueGrad,
     x: np.ndarray,
     f: float,
@@ -26,49 +26,79 @@ def backtracking_line_search(
     p: np.ndarray,
     alpha0: float = 1.0,
     c1: float = 1e-4,
-    tau: float = 0.5,
-    max_steps: int = 30,
+    c2: float = 0.9,
+    max_iter: int = 25,
 ) -> Tuple[float, float, np.ndarray, int]:
     """
-    Armijo backtracking line search.
-
-    Finds alpha = alpha0 * tau^m such that:
-        f(x + alpha p) <= f(x) + c1 * alpha * g^T p
-
-    Returns:
-        (alpha, f_new, g_new, n_feval_increment)
+    Strong Wolfe line search:
+      f(x+αp) <= f(x) + c1 α g^T p
+      |∇f(x+αp)^T p| <= c2 |g^T p|
+    Returns (alpha, f_new, g_new, n_feval_inc).
     """
-    # Ensure we have a descent direction; otherwise fall back to steepest descent.
-    gTp = float(np.dot(g, p))
-    if not np.isfinite(gTp) or gTp >= 0.0:
+    gTp0 = float(np.dot(g, p))
+    if not np.isfinite(gTp0) or gTp0 >= 0.0:
         p = -g
-        gTp = float(np.dot(g, p))
-
-    # If gradient is zero (or p is zero), step is irrelevant.
-    if gTp == 0.0 or not np.isfinite(gTp):
+        gTp0 = float(np.dot(g, p))
+    if gTp0 == 0.0 or not np.isfinite(gTp0):
         return 0.0, f, g, 0
 
+    nfe = 0
+    alpha_prev = 0.0
+    f_prev = f
+
+    def phi(a: float):
+        nonlocal nfe
+        xa = x + a * p
+        fa, ga = f_and_g(xa)
+        nfe += 1
+        return float(fa), np.asarray(ga, dtype=np.float64)
+
+    def zoom(alo: float, ahi: float, flo: float):
+        nonlocal nfe
+        for _ in range(max_iter):
+            aj = 0.5 * (alo + ahi)
+            fj, gj = phi(aj)
+            gTpj = float(np.dot(gj, p))
+
+            if (fj > f + c1 * aj * gTp0) or (fj >= flo):
+                ahi = aj
+            else:
+                if abs(gTpj) <= c2 * abs(gTp0):
+                    return aj, fj, gj
+                if gTpj * (ahi - alo) >= 0:
+                    ahi = alo
+                alo, flo = aj, fj
+
+            if abs(ahi - alo) < 1e-16:
+                break
+        # fallback
+        fj, gj = phi(alo)
+        return alo, fj, gj
+
     alpha = float(alpha0)
-    n_feval_inc = 0
 
-    # Armijo right-hand side is monotone in alpha, so backtracking works.
-    for _ in range(max_steps):
-        x_new = x + alpha * p
-        f_new, g_new = f_and_g(x_new)
-        n_feval_inc += 1
+    for it in range(max_iter):
+        f_new, g_new = phi(alpha)
 
-        if np.isfinite(f_new) and np.all(np.isfinite(g_new)):
-            if f_new <= f + c1 * alpha * gTp:
-                return alpha, float(f_new), np.asarray(g_new, dtype=np.float64), n_feval_inc
+        if (f_new > f + c1 * alpha * gTp0) or (it > 0 and f_new >= f_prev):
+            a, fn, gn = zoom(alpha_prev, alpha, f_prev)
+            return a, fn, gn, nfe
 
-        alpha *= tau
+        gTp = float(np.dot(g_new, p))
+        if abs(gTp) <= c2 * abs(gTp0):
+            return alpha, f_new, g_new, nfe
 
-        # If alpha becomes too small, give up (avoid underflow / no progress).
-        if alpha < 1e-16:
+        if gTp >= 0.0:
+            a, fn, gn = zoom(alpha, alpha_prev, f_new)
+            return a, fn, gn, nfe
+
+        alpha_prev = alpha
+        f_prev = f_new
+        alpha *= 2.0
+        if alpha > 1e6:
             break
 
-    # Failed to satisfy Armijo: return the best "do-nothing" step.
-    return 0.0, f, g, n_feval_inc
+    return 0.0, f, g, nfe
 
 
 def bfgs(
@@ -79,19 +109,10 @@ def bfgs(
     alpha0: float = 1.0,
 ) -> BFGSResult:
     """
-    Minimize f(x) with BFGS (inverse-Hessian form).
-
-    Maintains H_k ≈ (∇^2 f(x_k))^{-1}, updates:
-        p_k = -H_k g_k
-        x_{k+1} = x_k + α_k p_k   (α_k from Armijo backtracking)
-        s_k = x_{k+1} - x_k
-        y_k = g_{k+1} - g_k
-
-    Inverse-Hessian BFGS update:
-        ρ = 1 / (y^T s)
-        H_{k+1} = (I - ρ s y^T) H_k (I - ρ y s^T) + ρ s s^T
-
-    with curvature check y^T s > 0 (otherwise skip/reset).
+    BFGS quasi-Newton method (Algorithm 6.3 style):
+      p_k = -H_k g_k
+      alpha_k via (strong) Wolfe line search
+      H_{k+1} inverse-Hessian BFGS update with curvature check
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -102,98 +123,49 @@ def bfgs(
     n = x.size
     H = np.eye(n, dtype=np.float64)
 
-    hist: Dict[str, Any] = {
-        "f": [f],
-        "gnorm": [float(np.linalg.norm(g))],
-        "alpha": [],
-    }
+    hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
 
-    # A couple of practical safeguards
-    min_curv = 1e-12  # curvature threshold for y^T s
-    max_step_norm = 1e3  # prevents catastrophic steps if H gets wild
+    min_curv = 1e-12
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
         if gnorm < tol:
-            return BFGSResult(
-                x=x, f=f, g=g,
-                n_iter=k, n_feval=n_feval,
-                converged=True, history=hist
-            )
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=True, history=hist)
 
-        # Search direction
         p = -H @ g
-
-        # If not a descent direction (numerical issues), fall back to steepest descent.
         if float(np.dot(g, p)) >= 0.0 or not np.all(np.isfinite(p)):
-            p = -g
+            p = -g  # fallback
 
-        # Optional: cap step direction magnitude (stability)
-        pnorm = float(np.linalg.norm(p))
-        if pnorm > max_step_norm:
-            p = p * (max_step_norm / pnorm)
-
-        # Line search (Armijo)
-        alpha, f_new, g_new, inc = backtracking_line_search(
-            f_and_g, x, f, g, p,
-            alpha0=alpha0, c1=1e-4, tau=0.5, max_steps=30
+        alpha, f_new, g_new, inc = strong_wolfe_line_search(
+            f_and_g, x, f, g, p, alpha0=alpha0, c1=1e-4, c2=0.9
         )
         n_feval += inc
         hist["alpha"].append(float(alpha))
 
-        # If line search failed (alpha==0), try a tiny steepest descent step once.
         if alpha == 0.0:
-            p = -g
-            alpha, f_new, g_new, inc2 = backtracking_line_search(
-                f_and_g, x, f, g, p,
-                alpha0=min(alpha0, 1.0), c1=1e-4, tau=0.5, max_steps=30
-            )
-            n_feval += inc2
-            # If still no progress, stop.
-            if alpha == 0.0:
-                hist["f"].append(float(f))
-                hist["gnorm"].append(float(np.linalg.norm(g)))
-                return BFGSResult(
-                    x=x, f=f, g=g,
-                    n_iter=k + 1, n_feval=n_feval,
-                    converged=False, history=hist
-                )
+            # no progress
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=False, history=hist)
 
-        # Update state
         s = alpha * p
         x_new = x + s
         y = g_new - g
 
-        # Update history
         x = x_new
         f = float(f_new)
         g = np.asarray(g_new, dtype=np.float64)
+
         hist["f"].append(f)
         hist["gnorm"].append(float(np.linalg.norm(g)))
 
-        # BFGS update with curvature check
         yTs = float(np.dot(y, s))
-
         if np.isfinite(yTs) and yTs > min_curv:
             rho = 1.0 / yTs
-
-            # (I - ρ s y^T)
             I = np.eye(n, dtype=np.float64)
-            syT = np.outer(s, y)
-            ysT = np.outer(y, s)
-            ssT = np.outer(s, s)
-
-            V = I - rho * syT
-            H = V @ H @ (I - rho * ysT) + rho * ssT
-
-            # Symmetrize to fight numerical drift
+            V = I - rho * np.outer(s, y)
+            H = V @ H @ V.T + rho * np.outer(s, s)
             H = 0.5 * (H + H.T)
         else:
-            # Bad curvature: reset H (robust fallback)
             H = np.eye(n, dtype=np.float64)
 
-    return BFGSResult(
-        x=x, f=f, g=g,
-        n_iter=max_iter, n_feval=n_feval,
-        converged=False, history=hist
-    )
+    return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist)
+
