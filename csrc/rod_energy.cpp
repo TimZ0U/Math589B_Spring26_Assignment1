@@ -99,7 +99,8 @@ void rod_energy_grad(
         int i1 = idx(i + 1);
         for (int j = i + 1; j < N; ++j) {
             int j1 = idx(j + 1);
-            if (i == j || i1 == j || j1 == i) {
+            int diff = j - i;
+            if (diff <= 2 || diff >= N - 2) {
                 continue;
             }
 
