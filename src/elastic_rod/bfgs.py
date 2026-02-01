@@ -30,9 +30,19 @@ def backtracking_line_search(
     Simple Armijo backtracking line search.
     Returns (alpha, f_new, g_new, n_feval_increment).
     """
-    # TODO (students): implement Armijo condition and backtracking.
-    # Armijo: f(x + a p) <= f(x) + c1 a g^T p
-    raise NotImplementedError
+    gtp = float(g @ p)
+    alpha = float(alpha0)
+    n_feval_inc = 0
+    f_new = f
+    g_new = g
+    for _ in range(max_steps):
+        x_new = x + alpha * p
+        f_new, g_new = f_and_g(x_new)
+        n_feval_inc += 1
+        if f_new <= f + c1 * alpha * gtp:
+            break
+        alpha *= tau
+    return alpha, f_new, g_new, n_feval_inc
 
 def bfgs(
     f_and_g: ValueGrad,
@@ -72,17 +82,28 @@ def bfgs(
         p = -H @ g
 
         # Line search
-        # TODO (students): call your line search to get alpha, f_new, g_new.
-        # alpha, f_new, g_new, inc = backtracking_line_search(...)
-        raise NotImplementedError
+        alpha, f_new, g_new, inc = backtracking_line_search(
+            f_and_g, x, f, g, p, alpha0=alpha0
+        )
+        n_feval += inc
+        x_new = x + alpha * p
+        hist["alpha"].append(alpha)
 
         # Update step
-        # s = x_new - x
-        # y = g_new - g
+        s = x_new - x
+        y = g_new - g
+        ys = float(y @ s)
+        if ys > 0.0:
+            rho = 1.0 / ys
+            Hy = H @ y
+            yHy = float(y @ Hy)
+            H += (1.0 + yHy * rho) * rho * np.outer(s, s) - rho * (np.outer(Hy, s) + np.outer(s, Hy))
 
-        # TODO (students): BFGS update for H with curvature check y^T s > 0.
-        # Hint: Use the standard BFGS inverse-Hessian update.
-        raise NotImplementedError
+        x = x_new
+        f = f_new
+        g = g_new
+        hist["f"].append(f)
+        hist["gnorm"].append(np.linalg.norm(g))
 
     return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
                       converged=False, history=hist)
