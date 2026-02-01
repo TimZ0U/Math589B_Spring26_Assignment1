@@ -1,5 +1,3 @@
-#include <cmath>
-#include <algorithm>
 
 extern "C" {
 
