@@ -220,7 +220,7 @@ void rod_energy_grad(
             return std::min(da, N - da);
         };
 
-        const double h = 1e-8;
+        const double h = 5e-9;
 
         for (int i = 0; i < N; ++i) {
             for (int j = i + 1; j < N; ++j) {
