@@ -71,7 +71,6 @@ def strong_wolfe_line_search(
             if abs(ahi - alo) < 1e-16:
                 break
 
-        # fallback
         fj, gj = phi(alo)
         return alo, fj, gj
 
@@ -109,10 +108,10 @@ def bfgs(
     alpha0: float = 1.0,
 ) -> BFGSResult:
     """
-    BFGS quasi-Newton method (Algorithm 6.3 style):
+    Algorithm 6.3-style BFGS:
       p_k = -H_k g_k
-      alpha_k via strong Wolfe line search
-      H_{k+1} inverse-Hessian BFGS update with curvature check
+      alpha_k from Strong Wolfe
+      inverse-Hessian update with curvature check
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -122,8 +121,8 @@ def bfgs(
 
     n = x.size
     H = np.eye(n, dtype=np.float64)
-    hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
 
+    hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
     min_curv = 1e-12
 
     for k in range(max_iter):
@@ -133,7 +132,7 @@ def bfgs(
 
         p = -H @ g
         if float(np.dot(g, p)) >= 0.0 or not np.all(np.isfinite(p)):
-            p = -g  # fallback to steepest descent
+            p = -g
 
         alpha, f_new, g_new, inc = strong_wolfe_line_search(
             f_and_g, x, f, g, p, alpha0=alpha0, c1=1e-4, c2=0.9
@@ -161,10 +160,8 @@ def bfgs(
             I = np.eye(n, dtype=np.float64)
             V = I - rho * np.outer(s, y)
             H = V @ H @ V.T + rho * np.outer(s, s)
-            H = 0.5 * (H + H.T)  # symmetrize
+            H = 0.5 * (H + H.T)
         else:
             H = np.eye(n, dtype=np.float64)
 
     return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist)
-
-
