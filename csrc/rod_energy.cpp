@@ -3,13 +3,7 @@
 
 extern "C" {
 
-// Bump when you change the exported function signatures.
 int rod_api_version() { return 2; }
-
-static inline int imod(int i, int N) {
-    int r = i % N;
-    return (r < 0) ? (r + N) : r;
-}
 
 static inline double dot3(const double a[3], const double b[3]) {
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
@@ -27,7 +21,6 @@ static inline double norm3(const double a[3]) {
 
 // Robust closest points parameters between segments P0P1 and Q0Q1.
 // Returns s,t in [0,1]x[0,1].
-// Standard routine (Ericson-style).
 static inline void closest_params_segment_segment(
     const double P0[3], const double P1[3],
     const double Q0[3], const double Q1[3],
@@ -43,15 +36,16 @@ static inline void closest_params_segment_segment(
     double e = dot3(d2,d2);
     double f = dot3(d2,r);
 
-    if (a <= EPS && e <= EPS) { s = 0.0; t = 0.0; return; } // both points
-    if (a <= EPS) { // P is a point
+    if (a <= EPS && e <= EPS) { s = 0.0; t = 0.0; return; }
+    if (a <= EPS) {
         s = 0.0;
         t = (e > EPS) ? (f / e) : 0.0;
         t = std::clamp(t, 0.0, 1.0);
         return;
     }
+
     double c = dot3(d1,r);
-    if (e <= EPS) { // Q is a point
+    if (e <= EPS) {
         t = 0.0;
         s = -c / a;
         s = std::clamp(s, 0.0, 1.0);
@@ -65,7 +59,6 @@ static inline void closest_params_segment_segment(
     double tN, tD = denom;
 
     if (denom < EPS) {
-        // nearly parallel
         sN = 0.0; sD = 1.0;
         tN = f;   tD = e;
     } else {
@@ -73,7 +66,6 @@ static inline void closest_params_segment_segment(
         tN = (a*f - b*c);
     }
 
-    // clamp s
     if (sN < 0.0) {
         sN = 0.0;
         tN = f;
@@ -84,7 +76,6 @@ static inline void closest_params_segment_segment(
         tD = e;
     }
 
-    // clamp t
     if (tN < 0.0) {
         tN = 0.0;
         sN = -c;
@@ -110,7 +101,6 @@ static inline void lerp3(double out[3], const double A[3], const double B[3], do
     out[2] = A[2] + u*(B[2]-A[2]);
 }
 
-// WCA potential for segment–segment distance d (already minimized over u,v).
 static inline double wca_U(double d, double eps, double sigma) {
     const double rc = std::pow(2.0, 1.0/6.0) * sigma;
     if (d >= rc) return 0.0;
@@ -122,7 +112,6 @@ static inline double wca_U(double d, double eps, double sigma) {
     return 4.0*eps*(s12 - s6) + eps;
 }
 
-// Compute WCA energy between segment i=(i,i+1) and j=(j,j+1) using endpoints.
 static inline double segment_segment_wca_energy(
     const double Pi0[3], const double Pi1[3],
     const double Pj0[3], const double Pj1[3],
@@ -138,16 +127,15 @@ static inline double segment_segment_wca_energy(
     return wca_U(d, eps, sigma);
 }
 
-// Exported API
 void rod_energy_grad(
     int N,
     const double* x,
     double kb,
     double ks,
     double l0,
-    double kc,     // confinement strength
-    double eps,    // WCA epsilon
-    double sigma,  // WCA sigma
+    double kc,
+    double eps,
+    double sigma,
     double* energy_out,
     double* grad_out
 ) {
@@ -207,60 +195,55 @@ void rod_energy_grad(
     }
 
     // ---- Segment–segment WCA self-avoidance
-    //
-    // We must include dependence of (u*,v*) on endpoints in the gradient.
-    // Easiest reliable way: compute WCA energy exactly, but compute its gradient
-    // w.r.t. the 4 endpoints via local finite-differences.
-    //
+    // Central-difference gradient over the 4 endpoints (12 scalars).
     if (eps != 0.0 && sigma > 0.0) {
-        // Exclusion: skip segment pairs with circular index distance <= 2
-        // (j == i, i±1, i±2 mod N), which matches typical “non-adjacent” intent.
         auto seg_circ_dist = [&](int a, int b) {
             int da = std::abs(a - b);
             return std::min(da, N - da);
         };
 
-        const double h = 5e-9;
+        // Central difference step (much more accurate than forward diff for stiff WCA)
+        const double h = 1e-8;
 
         for (int i = 0; i < N; ++i) {
             for (int j = i + 1; j < N; ++j) {
                 if (seg_circ_dist(i, j) <= 2) continue;
 
-                // endpoints
                 double Pi0[3] = { get(i,0),   get(i,1),   get(i,2) };
                 double Pi1[3] = { get(i+1,0), get(i+1,1), get(i+1,2) };
                 double Pj0[3] = { get(j,0),   get(j,1),   get(j,2) };
                 double Pj1[3] = { get(j+1,0), get(j+1,1), get(j+1,2) };
 
-                // baseline energy contribution
                 double U0 = segment_segment_wca_energy(Pi0, Pi1, Pj0, Pj1, eps, sigma);
-                if (U0 == 0.0) continue;  // outside cutoff
+                if (U0 == 0.0) continue;
                 E += U0;
-
-                // FD gradient for the 4 endpoints (12 scalars)
-                // endpoint order: i, i+1, j, j+1
-                struct Endpt { int id; double p0[3]; double p1[3]; double q0[3]; double q1[3]; };
 
                 int ids[4] = { i, i+1, j, j+1 };
 
                 for (int a = 0; a < 4; ++a) {
                     int node = ids[a];
                     for (int d = 0; d < 3; ++d) {
-                        // Copy endpoints each time (cheap: just 4x3 doubles)
-                        double Ai0[3] = { Pi0[0], Pi0[1], Pi0[2] };
-                        double Ai1[3] = { Pi1[0], Pi1[1], Pi1[2] };
-                        double Aj0[3] = { Pj0[0], Pj0[1], Pj0[2] };
-                        double Aj1[3] = { Pj1[0], Pj1[1], Pj1[2] };
+                        // +h endpoints
+                        double Ai0p[3] = { Pi0[0], Pi0[1], Pi0[2] };
+                        double Ai1p[3] = { Pi1[0], Pi1[1], Pi1[2] };
+                        double Aj0p[3] = { Pj0[0], Pj0[1], Pj0[2] };
+                        double Aj1p[3] = { Pj1[0], Pj1[1], Pj1[2] };
 
-                        // Apply perturbation to the correct endpoint coordinate
-                        if (a == 0) Ai0[d] += h;
-                        if (a == 1) Ai1[d] += h;
-                        if (a == 2) Aj0[d] += h;
-                        if (a == 3) Aj1[d] += h;
+                        // -h endpoints
+                        double Ai0m[3] = { Pi0[0], Pi0[1], Pi0[2] };
+                        double Ai1m[3] = { Pi1[0], Pi1[1], Pi1[2] };
+                        double Aj0m[3] = { Pj0[0], Pj0[1], Pj0[2] };
+                        double Aj1m[3] = { Pj1[0], Pj1[1], Pj1[2] };
 
-                        double Uf = segment_segment_wca_energy(Ai0, Ai1, Aj0, Aj1, eps, sigma);
-                        double dU = (Uf - U0) / h;
+                        if (a == 0) { Ai0p[d] += h; Ai0m[d] -= h; }
+                        if (a == 1) { Ai1p[d] += h; Ai1m[d] -= h; }
+                        if (a == 2) { Aj0p[d] += h; Aj0m[d] -= h; }
+                        if (a == 3) { Aj1p[d] += h; Aj1m[d] -= h; }
 
+                        double Up = segment_segment_wca_energy(Ai0p, Ai1p, Aj0p, Aj1p, eps, sigma);
+                        double Um = segment_segment_wca_energy(Ai0m, Ai1m, Aj0m, Aj1m, eps, sigma);
+
+                        double dU = (Up - Um) / (2.0*h);
                         addg(node, d, dU);
                     }
                 }
@@ -272,4 +255,3 @@ void rod_energy_grad(
 }
 
 } // extern "C"
-
