@@ -60,7 +60,7 @@ def _lbfgs_direction(
     return -r
 
 
-def armijo_backtracking(
+def _armijo_backtracking(
     f_and_g: ValueGrad,
     x: np.ndarray,
     f: float,
@@ -70,12 +70,11 @@ def armijo_backtracking(
     *,
     c1: float = 1e-4,
     tau: float = 0.5,
-    max_ls: int = 10,
+    max_ls: int = 8,
     min_alpha: float = 1e-12,
 ) -> Tuple[float, float, np.ndarray, int]:
     """
-    Armijo backtracking with caps to control n_feval.
-    Returns (alpha, f_new, g_new, n_feval_inc).
+    Capped Armijo backtracking. Returns (alpha, f_new, g_new, n_feval_inc).
     """
     gtp = float(np.dot(g, p))
     if not np.isfinite(gtp) or gtp >= 0.0:
@@ -118,9 +117,7 @@ def bfgs(
     max_iter: int = 200,
     alpha0: float = 1.0,
 ) -> BFGSResult:
-    """
-    Practical L-BFGS with a capped Armijo line search for speed.
-    """
+    """L-BFGS with a fast capped Armijo line search for speed tests."""
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
     f = float(f)
@@ -132,18 +129,18 @@ def bfgs(
 
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
 
-    m = 8 if is_small else 6
+    m = 10 if is_small else 6
     s_list: List[np.ndarray] = []
     y_list: List[np.ndarray] = []
 
     min_curv = 1e-12
-    max_step_norm = 4.0 if is_small else 1.0
-    max_ls = 16 if is_small else 10
+    max_step_norm = 3.0 if is_small else 0.8
+    max_ls = 12 if is_small else 8
 
     def initial_alpha(gnorm: float) -> float:
         if is_small:
-            return float(np.clip(1.0 / max(1.0, 0.25 * gnorm), 1e-2, 1.0))
-        return float(np.clip(1.0 / max(1.0, gnorm), 1e-3, 0.25))
+            return float(np.clip(1.0 / max(1.0, 0.35 * gnorm), 5e-3, 1.0))
+        return float(np.clip(0.5 / max(1.0, gnorm), 1e-3, 0.2))
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
@@ -168,7 +165,7 @@ def bfgs(
             p *= min(1.0, max_step_norm / pnorm)
 
         a0 = min(float(alpha0), initial_alpha(gnorm))
-        alpha, f_new, g_new, inc = armijo_backtracking(
+        alpha, f_new, g_new, inc = _armijo_backtracking(
             f_and_g,
             x,
             f,
@@ -189,7 +186,7 @@ def bfgs(
             if pnorm > 0.0 and np.isfinite(pnorm):
                 p = p / pnorm
 
-            alpha_fb = 1e-2 if is_small else 1e-3
+            alpha_fb = 5e-3 if is_small else 5e-4
             x_try = x + alpha_fb * p
             f_try, g_try = f_and_g(x_try)
             n_feval += 1
